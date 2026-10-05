@@ -81,3 +81,18 @@ evaluates the composite against both any reported issue and unrecognizability.
 Because thresholds are selected on the same data, AP and ROC-AUC are the least
 optimistic comparison metrics; balanced accuracy and F1 are included to make
 the severe class imbalance visible.
+
+## CPBD / NIQE / PIQE no-reference quality baselines
+`cpbd_niqe_piqe.py` evaluates three additional no-reference image-quality metrics: CPBD, NIQE, and PIQE. Like BRISQUE, these methods produce a single image-quality score rather than predicting a specific defect category. They are therefore evaluated against two overall targets: unrecognizable and any_issue.
+
+```bash
+python vizwiz_non_ML_baseline/cpbd_niqe_piqe.py \
+  --val_dir /path/to/val \
+  --test_dir /path/to/test \
+  --csv /path/to/VizWiz_quality_issues_train_val_test.csv
+```
+
+Outputs:
+- nr_iqa_val_scores.csv: CPBD, NIQE, and PIQE scores for usable validation images;
+- nr_iqa_test_scores.csv: scores for labeled test images;
+- nr_iqa_results.csv: final validation-selected-threshold test results for both unrecognizable and any_issue.
