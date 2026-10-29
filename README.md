@@ -37,11 +37,6 @@ Run both models on GPUs 0, 1, and 2 with 144 image-question sequences per batch.
 GPUS=0,1,2 BATCH_SIZE=144 bash run_independent.sh
 ```
 
-Generate metrics, plots, and `results/independent/evaluation/report.html`.
-```bash
-python evaluate.py --bootstrap 1000
-```
-
 Compute the evaluation metrics: per-label precision at recall 1.0/0.9/0.8/0.7, and the mean rank of true issues under Platt-calibrated scores. Calibration is fit on `--calibration-results` / `--calibration-truth` (validation by default) and applied unchanged to the evaluation split; outputs go to `results/independent/evaluation_revised/`.
 ```bash
 python evaluate_revised.py --calibration-results results/independent_val --calibration-truth "$VIZWIZ_ROOT/datasets/vizwiz_quality/val_labels.json"
