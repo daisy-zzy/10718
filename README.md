@@ -42,7 +42,7 @@ Generate metrics, plots, and `results/independent/evaluation/report.html`.
 python evaluate.py --bootstrap 1000
 ```
 
-Run the evaluation checks.
+Compute the evaluation metrics: per-label precision at recall 1.0/0.9/0.8/0.7, and the mean rank of true issues under Platt-calibrated scores. Calibration is fit on `--calibration-results` / `--calibration-truth` (validation by default) and applied unchanged to the evaluation split; outputs go to `results/independent/evaluation_revised/`.
 ```bash
-python -m unittest test_evaluation.py
+python evaluate_revised.py --calibration-results results/independent_val --calibration-truth "$VIZWIZ_ROOT/datasets/vizwiz_quality/val_labels.json"
 ```
