@@ -76,11 +76,36 @@ python vizwiz_non_ML_baseline/rule_based_quality.py
 ```
 
 Outputs are `rule_based_test_scores.csv` and `rule_based_test_summary.json`.
-The summary evaluates each criterion against the matching crowd-vote label and
-evaluates the composite against both any reported issue and unrecognizability.
-Because thresholds are selected on the same data, AP and ROC-AUC are the least
-optimistic comparison metrics; balanced accuracy and F1 are included to make
-the severe class imbalance visible.
+When labels are supplied as the compact `test.csv` (`image_id`, `BLR`, `BRT`,
+`DRK`, `OBS`, `FRM`, `ROT`, `OTH`), the evaluator reports the seven matching
+heuristics and the composite against `any_issue`. It follows the Qwen baseline
+protocol: fixed `score > 0.5` decisions, plus AP, AUROC, F1, Brier score,
+log loss, and ten-bin ECE. Existing score files can be relabelled without
+rerunning image analysis using `--input-scores`.
+
+## Cross-label calibration and top-k retrieval
+
+Fit Platt scaling separately for each defect label on validation scores, then
+apply the fixed mappings to test scores when scores must be comparable across
+labels:
+
+```bash
+python vizwiz_non_ML_baseline/calibrate_rule_scores.py \
+  --val-labels /path/to/val.csv --val-scores rule_based_val_scores.csv \
+  --test-labels /path/to/test.csv --test-scores rule_based_test_scores.csv \
+  --output-dir results/non_ml/platt
+```
+
+The mapping is `sigmoid(a * logit(raw_score) + b)`, with a non-negative slope
+constraint matching the LLM baseline. Outputs include fitted parameters,
+validation raw/calibrated ECE, calibrated test probabilities, and each image's
+minimum `k` needed for Recall@k = 1, grouped by GT issue count.
+It also writes `per_label_precision_at_recall.csv` (AP and precision at recall
+1.0/0.9/0.8/0.7) and reports raw/calibrated cross-label mean rank, coverage,
+and top-1 hit alongside random, oracle, and validation-prior-only references.
+The macro AP and fixed-recall precision values average the six named defects
+(`BLR`, `BRT`, `DRK`, `OBS`, `FRM`, `ROT`); `OTH` remains a separately reported
+label. Prevalence is included as the precision baseline for a random ranking.
 
 ## CPBD / NIQE / PIQE no-reference quality baselines
 `cpbd_niqe_piqe.py` evaluates three additional no-reference image-quality metrics: CPBD, NIQE, and PIQE. Like BRISQUE, these methods produce a single image-quality score rather than predicting a specific defect category. They are therefore evaluated against two overall targets: unrecognizable and any_issue.

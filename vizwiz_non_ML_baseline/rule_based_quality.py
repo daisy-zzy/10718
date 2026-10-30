@@ -14,10 +14,14 @@ from statistics import mean, median
 import cv2
 import numpy as np
 
-from brisque_quality import average_precision, load_annotations, roc_auc
+from brisque_quality import load_annotations
+from sklearn.metrics import (accuracy_score, average_precision_score, balanced_accuracy_score,
+                             brier_score_loss, confusion_matrix, f1_score, log_loss,
+                             matthews_corrcoef, precision_score, recall_score, roc_auc_score)
 
 
 FLAWS = ("FRM", "BLR", "BRT", "DRK", "OBS", "ROT", "OTH", "NON")
+ISSUES = ("BLR", "BRT", "DRK", "OBS", "FRM", "ROT", "OTH")
 
 
 def clamp(value: float) -> float:
@@ -129,49 +133,86 @@ def extract_scores(image: np.ndarray) -> dict[str, float]:
     }
 
 
-def best_balanced_threshold(labels: list[int], scores: list[float]) -> tuple[float, float]:
-    positives, negatives = sum(labels), len(labels) - sum(labels)
-    if not positives or not negatives:
-        return math.nan, math.nan
-    ordered = sorted(zip(scores, labels), reverse=True)
-    tp, tn = 0, negatives
-    best = (0.5, math.nextafter(ordered[0][0], math.inf))
-    index = 0
-    while index < len(ordered):
-        end = index
-        while end < len(ordered) and ordered[end][0] == ordered[index][0]:
-            end += 1
-        group = [label for _, label in ordered[index:end]]
-        tp += sum(group)
-        tn -= len(group) - sum(group)
-        balanced = 0.5 * (tp / positives + tn / negatives)
-        if balanced > best[0]:
-            best = (balanced, ordered[index][0])
-        index = end
-    return best
-
-
 def classification_metrics(labels: list[int], scores: list[float]) -> dict:
-    balanced, threshold = best_balanced_threshold(labels, scores)
-    predictions = [int(score >= threshold) for score in scores]
-    tp = sum(y == p == 1 for y, p in zip(labels, predictions))
-    tn = sum(y == p == 0 for y, p in zip(labels, predictions))
-    fp = sum(y == 0 and p == 1 for y, p in zip(labels, predictions))
-    fn = sum(y == 1 and p == 0 for y, p in zip(labels, predictions))
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
+    """Match the Qwen evaluator: score > .5, plus ranking and calibration metrics."""
+    y = np.asarray(labels, dtype=int)
+    p = np.asarray(scores, dtype=float)
+    predictions = (p > 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y, predictions, labels=[0, 1]).ravel()
+    bin_ids = np.minimum((p * 10).astype(int), 9)
+    ece = sum(np.mean(bin_ids == bucket) * abs(p[bin_ids == bucket].mean() - y[bin_ids == bucket].mean())
+              for bucket in range(10) if (bin_ids == bucket).any())
     return {
-        "positives": sum(labels),
-        "average_precision": average_precision(labels, scores),
-        "roc_auc": roc_auc(labels, scores),
-        "balanced_accuracy": balanced,
-        "threshold": threshold,
-        "accuracy": (tp + tn) / len(labels),
-        "precision": precision,
-        "recall": recall,
-        "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
-        "confusion_matrix": {"tp": tp, "fp": fp, "tn": tn, "fn": fn},
+        "n": int(len(y)), "positives": int(y.sum()), "prevalence": float(y.mean()),
+        "AP": float(average_precision_score(y, p)) if y.sum() else None,
+        "AUROC": float(roc_auc_score(y, p)) if len(np.unique(y)) == 2 else None,
+        "precision": float(precision_score(y, predictions, zero_division=0)),
+        "recall": float(recall_score(y, predictions, zero_division=0)),
+        "F1": float(f1_score(y, predictions, zero_division=0)),
+        "accuracy": float(accuracy_score(y, predictions)),
+        "balanced_accuracy": float(balanced_accuracy_score(y, predictions)),
+        "MCC": float(matthews_corrcoef(y, predictions)),
+        "Brier": float(brier_score_loss(y, p)),
+        "log_loss": float(log_loss(y, np.clip(p, 1e-7, 1 - 1e-7), labels=[0, 1])),
+        "ECE_10bins": float(ece), "threshold": 0.5, "positive_rule": "score > 0.5; ties -> 0",
+        "TN": int(tn), "FP": int(fp), "FN": int(fn), "TP": int(tp),
     }
+
+
+def load_target_labels(path: Path) -> list[dict]:
+    """Read the compact test.csv, or retain support for the original crowd CSV."""
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        columns = set(reader.fieldnames or [])
+        if {"image_id", *ISSUES}.issubset(columns):
+            rows = []
+            for row in reader:
+                labels = {issue: int(row[issue]) for issue in ISSUES}
+                rows.append({"image": row["image_id"], "labels": labels,
+                             "any_issue": int(any(labels.values()))})
+            return rows
+    annotations = load_annotations(path, "test")
+    rows = []
+    for ann in annotations:
+        labels = {issue: int(ann["flaws"][issue] >= 2) for issue in ISSUES}
+        rows.append({"image": ann["image"], "labels": labels,
+                     "any_issue": int(any(labels.values()))})
+    return rows
+
+
+def top_k_coverage(rows: list[dict]) -> tuple[list[dict], dict]:
+    """Per-image minimum k needed to retrieve every positive ground-truth issue."""
+    per_image = []
+    for row in rows:
+        # Python's stable sort makes ties deterministic in the documented ISSUES order.
+        ranked = sorted(ISSUES, key=lambda issue: -float(row[f"score_{issue}"]))
+        positives = [issue for issue in ISSUES if int(row[f"label_{issue}"]) == 1]
+        ranks = {issue: index + 1 for index, issue in enumerate(ranked)}
+        minimum_k = max((ranks[issue] for issue in positives), default=0)
+        per_image.append({"image": row["image"], "gt_positive_count": len(positives),
+                          "gt_positive_labels": ",".join(positives),
+                          "ranked_labels": ",".join(ranked), "k_min_recall_1": minimum_k})
+
+    def summarize(group: list[dict]) -> dict:
+        required = np.asarray([row["k_min_recall_1"] for row in group], dtype=float)
+        return {"n": int(len(group)), "mean_k_min": float(required.mean()),
+                "median_k_min": float(np.median(required)),
+                "p25_k_min": float(np.percentile(required, 25)),
+                "p75_k_min": float(np.percentile(required, 75)),
+                "p90_k_min": float(np.percentile(required, 90)),
+                "max_k_min": int(required.max()),
+                # Sample-level Recall@k: all GT labels of an image must be retrieved.
+                "recall_1_at_k": {str(k): float(np.mean(required <= k)) for k in range(1, len(ISSUES) + 1)}}
+
+    positives = [row for row in per_image if row["gt_positive_count"] > 0]
+    by_cardinality = {str(count): summarize([row for row in positives if row["gt_positive_count"] == count])
+                      for count in range(1, len(ISSUES) + 1)
+                      if any(row["gt_positive_count"] == count for row in positives)}
+    return per_image, {"definition": "k_min_recall_1 is the maximum rank among an image's GT-positive labels; ties use ISSUES order.",
+                       "labels_ranked": list(ISSUES), "positive_label_images": len(positives),
+                       "zero_positive_label_images": len(per_image) - len(positives),
+                       "overall_positive_label_images": summarize(positives),
+                       "by_gt_positive_count": by_cardinality}
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,34 +225,53 @@ def parse_args() -> argparse.Namespace:
                         default=root / "vizwiz_non_ML_baseline/rule_based_test_scores.csv")
     parser.add_argument("--summary", type=Path,
                         default=root / "vizwiz_non_ML_baseline/rule_based_test_summary.json")
+    parser.add_argument("--input-scores", type=Path,
+                        help="reuse an existing rule score CSV and only recompute labels/metrics")
+    parser.add_argument("--topk-output", type=Path,
+                        help="CSV containing per-image minimum k for Recall@k=1")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--offset", type=int, default=0,
+                        help="start at this zero-based label row (useful for resumable score batches)")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    annotations = load_annotations(args.labels, "test")
+    annotations = load_target_labels(args.labels)
+    if args.offset:
+        annotations = annotations[args.offset:]
     if args.limit:
         annotations = annotations[:args.limit]
     rows = []
     failures = []
-    for index, ann in enumerate(annotations, 1):
-        path = args.images / ann["image"]
-        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if image is None:
-            failures.append(ann["image"])
-            continue
-        scores = extract_scores(image)
-        flaws = ann["flaws"]
-        rows.append({
-            "image": ann["image"], **scores,
-            **{f"label_{key}": int(flaws[key] >= 2) for key in FLAWS},
-            "reject_votes": ann["unrecognizable"],
-            "label_unrecognizable": ann["unrecognizable_label"],
-            "label_any_issue": int(any(flaws[key] >= 2 for key in FLAWS if key != "NON")),
-        })
-        if index % 250 == 0 or index == len(annotations):
-            print(f"Processed {index}/{len(annotations)}", file=sys.stderr)
+    if args.input_scores:
+        with args.input_scores.open(newline="", encoding="utf-8") as handle:
+            existing = {row["image"]: row for row in csv.DictReader(handle)}
+        required = {f"score_{key}" for key in ISSUES} | {"score_composite"}
+        for ann in annotations:
+            row = existing.get(ann["image"])
+            if row is None or not required.issubset(row):
+                failures.append(ann["image"])
+                continue
+            rows.append({"image": ann["image"], **{key: float(value) if key.startswith("score_") else value
+                                                   for key, value in row.items() if key != "image"},
+                         **{f"label_{key}": ann["labels"][key] for key in ISSUES},
+                         "label_any_issue": ann["any_issue"]})
+    else:
+        for index, ann in enumerate(annotations, 1):
+            path = args.images / ann["image"]
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if image is None:
+                failures.append(ann["image"])
+                continue
+            scores = extract_scores(image)
+            rows.append({
+                "image": ann["image"], **scores,
+                **{f"label_{key}": ann["labels"][key] for key in ISSUES},
+                "label_any_issue": ann["any_issue"],
+            })
+            if index % 250 == 0 or index == len(annotations):
+                print(f"Processed {index}/{len(annotations)}", file=sys.stderr)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as handle:
@@ -220,7 +280,7 @@ def main() -> int:
         writer.writerows(rows)
 
     evaluations = {}
-    for flaw in FLAWS:
+    for flaw in ISSUES:
         evaluations[flaw] = classification_metrics(
             [int(row[f"label_{flaw}"]) for row in rows],
             [float(row[f"score_{flaw}"]) for row in rows],
@@ -228,19 +288,25 @@ def main() -> int:
     composite_scores = [float(row["score_composite"]) for row in rows]
     evaluations["composite_vs_any_issue"] = classification_metrics(
         [int(row["label_any_issue"]) for row in rows], composite_scores)
-    evaluations["composite_vs_unrecognizable"] = classification_metrics(
-        [int(row["label_unrecognizable"]) for row in rows], composite_scores)
+    topk_rows, topk_summary = top_k_coverage(rows)
+    topk_output = args.topk_output or args.summary.with_name(args.summary.stem + "_topk.csv")
+    with topk_output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(topk_rows[0]))
+        writer.writeheader()
+        writer.writerows(topk_rows)
 
     summary = {
         "method": "pure hand-crafted OpenCV rules; no learned parameters",
-        "label_rule": "at least 2 of 5 crowd votes (official VizWiz threshold)",
-        "threshold_note": "Thresholds maximize balanced accuracy on this same test set and are descriptive, not held-out estimates.",
+        "label_rule": "labels supplied by --labels (compact test.csv uses its provided binary labels)",
+        "metric_protocol": "Aligned with vizwiz_baseline/evaluate.py: fixed score > 0.5 and AP/AUROC/F1/Brier/log loss/ECE.",
         "scored_images": len(rows), "failed_images": failures,
         "evaluations": evaluations,
+        "top_k_recall": topk_summary,
     }
     args.summary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote scores to {args.output}")
     print(f"Wrote metrics to {args.summary}")
+    print(f"Wrote top-k coverage to {topk_output}")
     return 0
 
 
