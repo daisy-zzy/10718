@@ -1,0 +1,28 @@
+{
+  "data": {
+    "labels": "/mnt/nvme",
+    "images": "/mnt/nvme"
+  },
+  "seed": 42,
+  "device": "cuda",
+  "image_size": 224,
+  "training": {
+    "epochs": 30,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "num_workers": 8,
+    "amp": true,
+    "gradient_clip": 1.0,
+    "positive_weighting": true
+  },
+  "policy": {"threshold": 0.5, "max_predictions": 5},
+  "selection": {"metric": "classification.macro6_p_at_r90", "mode": "max"},
+  "metrics": ["classification", "correction"],
+  "models": [
+    {"id": "cnn", "name": "simple_cnn", "kwargs": {"width": 32, "dropout": 0.2}},
+    {"id": "resnet", "name": "small_resnet", "kwargs": {"width": 32, "blocks": [2, 2, 2, 2], "dropout": 0.2}},
+    {"id": "resnet18", "name": "resnet18", "kwargs": {"dropout": 0.2}},
+    {"id": "resnet34", "name": "resnet34", "kwargs": {"dropout": 0.2}}
+  ]
+}
