@@ -59,6 +59,15 @@ def precision_at_recall(y, scores, targets=RECALL_TARGETS):
     return result
 
 
+def validation_r90_points(y, logits, mask):
+    """Fit per-label operating points on observed validation targets."""
+    return {
+        label: precision_at_recall(y[mask[:, j], j], logits[mask[:, j], j],
+                                   targets=(0.9,))["0.9"]
+        for j, label in enumerate(LABELS)
+    }
+
+
 def per_label_metrics(y, scores):
     """Descriptive test-curve metrics; thresholds here use the supplied labels."""
     y, scores = _arrays(y, scores)

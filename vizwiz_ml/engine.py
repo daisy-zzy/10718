@@ -19,6 +19,7 @@ from .data import QualityDataset, load_records, targets
 from .io import read_json, sha256, write_json
 from .metrics import evaluate_metrics, prediction_lists
 from .models import build_model
+from .report_metrics import validation_r90_points
 
 
 def seed_everything(seed):
@@ -194,6 +195,10 @@ def train_model(config, spec, output):
         scores = expit(val_logits.astype(np.float64))
         metrics = evaluate_metrics(val_y, scores, val_mask, config["policy"], config["metrics"],
                                    selection_scores=val_logits)
+        operating_point = {
+            "fit_split": "val", "recall_target": 0.9, "score_space": "raw logits",
+            "per_label": validation_r90_points(val_y, val_logits, val_mask),
+        }
         validation_seconds = perf_counter() - validation_started
         value = metric_value(metrics, config["selection"]["metric"])
         improved = best_value is None or (value > best_value if config["selection"]["mode"] == "max" else value < best_value)
@@ -205,6 +210,7 @@ def train_model(config, spec, output):
                       "model_state": model.state_dict(), "optimizer_state": optimizer.state_dict(),
                       "scheduler_state": scheduler.state_dict(), "scaler_state": scaler.state_dict(),
                       "validation_metrics": metrics, "positive_weights": weights.tolist(),
+                      "validation_operating_point": operating_point,
                       "best_epoch": best_epoch, "best_value": best_value}
         atomic_checkpoint(output / "last.pt", checkpoint)
         if improved:

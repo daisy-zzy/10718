@@ -6,6 +6,7 @@ from .config import load_config
 from .engine import calibrate_checkpoint, evaluate_checkpoint, metric_value, train_model
 from .io import read_json, sha256, write_json
 from .report import report_checkpoint
+from .external import predict_external
 
 
 def select_best(run_dirs, output):
@@ -80,6 +81,14 @@ def main():
     report.add_argument("--calibration", type=Path, help="Reuse an existing validation-fitted Platt JSON")
     report.add_argument("--model-name", help="Display name in CSV/LaTeX tables")
     report.add_argument("--l2", type=float, default=1e-4, help="Regularization when fitting a new calibration")
+    external = commands.add_parser("predict", help="Predict both feedback variations on external images")
+    external.add_argument("--checkpoint", type=Path, required=True)
+    external.add_argument("--images", type=Path, nargs="+", required=True,
+                          help="One or more image files or directories (nonrecursive)")
+    external.add_argument("--device")
+    external.add_argument("--operating-points", type=Path, help="Report operating_points.json")
+    external.add_argument("--calibration", type=Path, help="Defaults to calibration.json next to operating points")
+    external.add_argument("--variation", choices=("1", "2", "both"), default="both")
     args = parser.parse_args()
     if args.command in ("train", "experiment"):
         config = load_config(args.config)
@@ -117,6 +126,34 @@ def main():
             raise ValueError("Selected checkpoint changed after validation selection")
         evaluate_checkpoint(winner["checkpoint"], "test", args.output, args.device, selection,
                             calibration_path=args.calibration)
+    elif args.command == "predict":
+        predictions = predict_external(args.checkpoint, args.images, args.device,
+                                       args.operating_points, args.calibration)
+        output_paths = [Path(image).with_suffix(".json") for image, _ in predictions]
+        if len(set(output_paths)) != len(output_paths):
+            parser.error("Input images in the same folder must have distinct base names")
+        protected_paths = {Path(image) for image, _ in predictions}
+        protected_paths.update(path.resolve() for path in
+                               (args.checkpoint, args.operating_points, args.calibration) if path is not None)
+        if args.operating_points is not None and args.calibration is None:
+            protected_paths.add(args.operating_points.with_name("calibration.json").resolve())
+        if any(path.resolve() in protected_paths for path in output_paths):
+            parser.error("A prediction JSON path would overwrite an input file")
+        for (image, decisions), output_path in zip(predictions, output_paths):
+            print(f"Image: {image}")
+            result = {"image": image}
+            if args.variation in ("1", "both"):
+                has_issues = any(decisions.values())
+                result["variation_1"] = {"ISSUES": has_issues}
+                print(f"Variation 1:\nISSUES: {has_issues}")
+            if args.variation in ("2", "both"):
+                result["variation_2"] = decisions
+                print("Variation 2:")
+                for label, decision in decisions.items():
+                    print(f"{label}: {decision}")
+            write_json(output_path, result)
+            print(f"Saved: {output_path}")
+            print()
     elif args.command == "report":
         selection = read_json(args.selection) if args.selection is not None else None
         if selection is not None and selection["selection_source"] != "validation_only":

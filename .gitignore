@@ -1,0 +1,15 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# macOS metadata
+.DS_Store
+
+# Local VizWiz data and experiment output
+/data/
+/results/
+/runs/
+/vizwiz_llm_baseline/data/
+/vizwiz_llm_baseline/results/

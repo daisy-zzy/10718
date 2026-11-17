@@ -156,6 +156,43 @@ not used by this workflow.
 
 ## Evaluation and prediction policy
 
+### Predict feedback for external images
+
+New checkpoints store one validation threshold per issue, chosen to maximize
+precision at recall of at least 0.9. Each best.pt and last.pt stores thresholds
+for its own weights. The predict command accepts one or more files or directories
+(scanned nonrecursively) and uses the same image preprocessing as training.
+External images need no labels or VizWiz filenames.
+
+~~~bash
+python -m vizwiz_ml.cli predict \
+  --checkpoint runs/resnet34_01/last.pt \
+  --images /path/to/photo.jpg /path/to/more_photos
+~~~
+
+For a checkpoint saved before thresholds were embedded, supply its existing
+report's operating_points.json. The matching calibration.json is loaded from
+the same folder, or can be specified with --calibration.
+
+~~~bash
+python -m vizwiz_ml.cli predict \
+  --checkpoint runs/resnet34_01/last.pt \
+  --operating-points reports/resnet34_50epoch_revised_report_last/operating_points.json \
+  --images /path/to/photo.jpg
+~~~
+
+Use --device cpu to run locally if the checkpoint was trained on CUDA. By
+default, each image displays both feedback variations. Use --variation 1 or
+--variation 2 to display just one condition for a feedback session.
+Each image also gets a JSON file beside it, such as photo.json for photo.jpg.
+It records the image path and the selected feedback variation(s). Running
+predict again for the same image replaces its JSON file. Use distinct image
+base names within each folder when predicting multiple images at once.
+Variation 2 independently compares all seven scores against their thresholds,
+with no prediction cap. Variation 1 is the logical OR of those same decisions.
+The 0.9 recall target applies per label on validation and external recall
+can differ. A missing threshold causes an error.
+
 ### Revised metrics and tables from an existing checkpoint
 
 An existing seven-label CNN checkpoint is sufficient; no retraining or
