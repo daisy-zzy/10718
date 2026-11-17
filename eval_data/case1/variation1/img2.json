@@ -1,0 +1,15 @@
+{
+  "image": "/home/ec2-user/10718/eval_data/case1/variation1/img2.jpg",
+  "variation_1": {
+    "ISSUES": true
+  },
+  "variation_2": {
+    "BLR": false,
+    "BRT": false,
+    "DRK": false,
+    "FRM": false,
+    "OBS": false,
+    "ROT": true,
+    "OTH": false
+  }
+}
